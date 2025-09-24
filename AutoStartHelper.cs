@@ -9,7 +9,7 @@ namespace ServiceWatchdogArr
 
         public static void Enable(string exePath)
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RUN_KEY, writable: true);
+            using var key = Registry.CurrentUser.CreateSubKey(RUN_KEY, writable: true);
             key?.SetValue(APP_NAME, $"\"{exePath}\"");
         }
 
