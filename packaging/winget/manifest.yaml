@@ -1,0 +1,12 @@
+# WinGet manifest template for ServiceWatchdogArr portable package
+Id: ServiceWatchdogArr.ServiceWatchdogArr
+Publisher: ServiceWatchdogArr
+Name: ServiceWatchdogArr
+Version: 0.1.0
+License: MIT
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://example.com/ServiceWatchdogArr-0.1.0.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ShortDescription: Tray application that monitors user-selected services and processes and restarts them when required.
