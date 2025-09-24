@@ -146,10 +146,7 @@ namespace ServiceWatchdogArr
 
         public WatchdogConfig Update(Func<WatchdogConfig, WatchdogConfig> updater)
         {
-            if (updater == null)
-            {
-                throw new ArgumentNullException(nameof(updater));
-            }
+            ArgumentNullException.ThrowIfNull(updater);
 
             lock (_syncRoot)
             {
@@ -313,7 +310,7 @@ namespace ServiceWatchdogArr
                 configObject["Applications"] = appsArray;
             }
 
-            foreach (JsonNode? node in appsArray)
+            foreach (JsonNode node in appsArray)
             {
                 if (node is not JsonObject appObject)
                 {

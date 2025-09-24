@@ -28,6 +28,8 @@ namespace ServiceWatchdogArr
         private readonly Dictionary<string, bool> _serviceRequiresElevation = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _processOnlyConsent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _promptShown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _restartAttempts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> _lastRestartTime = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly ToolStripMenuItem _globalMonitoringItem;
         private readonly ToolStripMenuItem _refreshItem;
         private readonly ToolStripMenuItem _servicesRootItem;
@@ -130,11 +132,52 @@ namespace ServiceWatchdogArr
                 foreach (ApplicationStatusSnapshot snapshot in e.Statuses)
                 {
                     _latestStatuses[snapshot.Application.Name] = snapshot;
+                    CheckAndRestartUnhealthyApplication(snapshot);
                 }
 
                 UpdateMenuFromStatuses();
                 UpdateTraySummary();
             }, null);
+        }
+
+        private void CheckAndRestartUnhealthyApplication(ApplicationStatusSnapshot snapshot)
+        {
+            if (ApplicationArguments.SafeMode || snapshot.Health != ApplicationHealth.Unhealthy)
+            {
+                if (snapshot.Health == ApplicationHealth.Healthy)
+                {
+                    _restartAttempts.Remove(snapshot.Application.Name);
+                    _lastRestartTime.Remove(snapshot.Application.Name);
+                }
+                return;
+            }
+
+            string appName = snapshot.Application.Name;
+            DateTime now = DateTime.Now;
+
+            if (!_restartAttempts.TryGetValue(appName, out int attempts))
+            {
+                attempts = 0;
+            }
+
+            if (_lastRestartTime.TryGetValue(appName, out DateTime lastRestart))
+            {
+                if (now.Subtract(lastRestart).TotalMinutes < 2)
+                {
+                    return;
+                }
+            }
+
+            if (attempts >= 3)
+            {
+                return;
+            }
+
+            _restartAttempts[appName] = attempts + 1;
+            _lastRestartTime[appName] = now;
+
+            Logger.Write($"Auto-restarting unhealthy application {appName} (attempt {attempts + 1}/3)");
+            RestartApplication(appName);
         }
 
         private void BuildServiceMenu()
@@ -170,29 +213,50 @@ namespace ServiceWatchdogArr
 
         private void UpdateMenuFromStatuses()
         {
-            foreach (var kvp in _applicationMenuItems)
+            try
             {
-                string appName = kvp.Key;
-                ToolStripMenuItem menuItem = kvp.Value;
-                if (_latestStatuses.TryGetValue(appName, out ApplicationStatusSnapshot snapshot))
+                foreach (var kvp in _applicationMenuItems)
                 {
-                    menuItem.Text = string.Concat(GetStatusEmoji(snapshot.Health), " ", snapshot.Application.Name);
-                    menuItem.Image = GetStatusImage(snapshot.Health);
-                    menuItem.ToolTipText = BuildTooltip(snapshot);
-
-                    if (_toggleMenuItems.TryGetValue(appName, out ToolStripMenuItem toggleItem))
+                    string appName = kvp.Key;
+                    ToolStripMenuItem menuItem = kvp.Value;
+                    if (_latestStatuses.TryGetValue(appName, out ApplicationStatusSnapshot snapshot))
                     {
-                        toggleItem.Text = snapshot.Application.MonitoringEnabled ? "Disable Monitoring" : "Enable Monitoring";
+                        menuItem.Text = string.Concat(GetStatusEmoji(snapshot.Health), " ", snapshot.Application.Name);
+                        try
+                        {
+                            menuItem.Image = GetStatusImage(snapshot.Health);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Write(ex, $"Failed to set image for menu item {appName}");
+                        }
+                        menuItem.ToolTipText = BuildTooltip(snapshot);
+
+                        if (_toggleMenuItems.TryGetValue(appName, out ToolStripMenuItem toggleItem))
+                        {
+                            toggleItem.Text = snapshot.Application.MonitoringEnabled ? "Disable Monitoring" : "Enable Monitoring";
+                        }
+                    }
+                    else
+                    {
+                        menuItem.Text = string.Concat(GetStatusEmoji(ApplicationHealth.MonitoringDisabled), " ", menuItem.Tag);
+                        try
+                        {
+                            menuItem.Image = GetStatusImage(ApplicationHealth.MonitoringDisabled);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Write(ex, $"Failed to set fallback image for menu item {appName}");
+                        }
                     }
                 }
-                else
-                {
-                    menuItem.Text = string.Concat(GetStatusEmoji(ApplicationHealth.MonitoringDisabled), " ", menuItem.Tag);
-                    menuItem.Image = GetStatusImage(ApplicationHealth.MonitoringDisabled);
-                }
-            }
 
-            _globalMonitoringItem.Checked = _currentConfig.GlobalMonitoringEnabled;
+                _globalMonitoringItem.Checked = _currentConfig.GlobalMonitoringEnabled;
+            }
+            catch (Exception ex)
+            {
+                Logger.Write(ex, "UpdateMenuFromStatuses failed");
+            }
         }
 
         private void UpdateTraySummary()
@@ -228,7 +292,7 @@ namespace ServiceWatchdogArr
             SetTrayStatus(trayStatus, TooltipWithSafeMode(tooltip));
         }
 
-        private string TooltipWithSafeMode(string tooltip)
+        private static string TooltipWithSafeMode(string tooltip)
         {
             if (ApplicationArguments.SafeMode)
             {
@@ -259,32 +323,35 @@ namespace ServiceWatchdogArr
                 return _baseIcon;
             }
 
-            if (_trayIcons.TryGetValue(status, out Icon icon))
+            lock (_trayIcons)
             {
-                return icon;
-            }
+                if (_trayIcons.TryGetValue(status, out Icon icon))
+                {
+                    return icon;
+                }
 
-            Color fill;
-            Color border;
-            switch (status)
-            {
-                case TrayStatus.AllHealthy:
-                    fill = Color.LimeGreen;
-                    border = Color.SeaGreen;
-                    break;
-                case TrayStatus.IssueDetected:
-                    fill = Color.OrangeRed;
-                    border = Color.Maroon;
-                    break;
-                default:
-                    fill = Color.LightGray;
-                    border = Color.DimGray;
-                    break;
-            }
+                Color fill;
+                Color border;
+                switch (status)
+                {
+                    case TrayStatus.AllHealthy:
+                        fill = Color.LimeGreen;
+                        border = Color.SeaGreen;
+                        break;
+                    case TrayStatus.IssueDetected:
+                        fill = Color.OrangeRed;
+                        border = Color.Maroon;
+                        break;
+                    default:
+                        fill = Color.LightGray;
+                        border = Color.DimGray;
+                        break;
+                }
 
-            Icon generated = CreateStatusIcon(fill, border);
-            _trayIcons[status] = generated;
-            return generated;
+                Icon generated = CreateStatusIcon(fill, border);
+                _trayIcons[status] = generated;
+                return generated;
+            }
         }
 
         private Icon CreateStatusIcon(Color fill, Color border)
@@ -317,48 +384,51 @@ namespace ServiceWatchdogArr
 
         private Image GetStatusImage(ApplicationHealth health)
         {
-            if (_statusImages.TryGetValue(health, out Image image))
+            lock (_statusImages)
             {
-                return image;
-            }
-
-            Color fill;
-            Color border;
-            switch (health)
-            {
-                case ApplicationHealth.Healthy:
-                    fill = Color.LimeGreen;
-                    border = Color.SeaGreen;
-                    break;
-                case ApplicationHealth.Unhealthy:
-                    fill = Color.OrangeRed;
-                    border = Color.Maroon;
-                    break;
-                default:
-                    fill = Color.LightGray;
-                    border = Color.DimGray;
-                    break;
-            }
-
-            Bitmap bmp = new Bitmap(16, 16);
-            using (Graphics g = Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.Clear(Color.Transparent);
-                Rectangle rect = new Rectangle(3, 3, 10, 10);
-                using (var brush = new SolidBrush(fill))
+                if (_statusImages.TryGetValue(health, out Image image))
                 {
-                    g.FillEllipse(brush, rect);
+                    return image;
                 }
 
-                using (var pen = new Pen(border, 2f))
+                Color fill;
+                Color border;
+                switch (health)
                 {
-                    g.DrawEllipse(pen, rect);
+                    case ApplicationHealth.Healthy:
+                        fill = Color.LimeGreen;
+                        border = Color.SeaGreen;
+                        break;
+                    case ApplicationHealth.Unhealthy:
+                        fill = Color.OrangeRed;
+                        border = Color.Maroon;
+                        break;
+                    default:
+                        fill = Color.LightGray;
+                        border = Color.DimGray;
+                        break;
                 }
-            }
 
-            _statusImages[health] = bmp;
-            return bmp;
+                Bitmap bmp = new Bitmap(16, 16);
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+                    Rectangle rect = new Rectangle(3, 3, 10, 10);
+                    using (var brush = new SolidBrush(fill))
+                    {
+                        g.FillEllipse(brush, rect);
+                    }
+
+                    using (var pen = new Pen(border, 2f))
+                    {
+                        g.DrawEllipse(pen, rect);
+                    }
+                }
+
+                _statusImages[health] = bmp;
+                return bmp;
+            }
         }
 
         private static string GetStatusEmoji(ApplicationHealth health)
@@ -491,7 +561,7 @@ namespace ServiceWatchdogArr
             ServiceRestartResult serviceResult = ServiceRestartResult.Skipped;
             if (!skipService)
             {
-                serviceResult = _serviceManager.RestartService(application.ServiceName);
+                serviceResult = ServiceManager.RestartService(application.ServiceName);
                 if (serviceResult.Succeeded)
                 {
                     Logger.Write($"Service restart succeeded for {application.Name}.");
@@ -510,10 +580,10 @@ namespace ServiceWatchdogArr
                 }
             }
 
-            bool killed = _processManager.KillProcesses(application.ProcessNames, application.Name);
+            bool killed = ProcessManager.KillProcesses(application.ProcessNames, application.Name);
             if (!string.IsNullOrWhiteSpace(application.ExecutablePath))
             {
-                bool started = _processManager.StartProcess(application.ExecutablePath, application.Name);
+                bool started = ProcessManager.StartProcess(application.ExecutablePath, application.Name);
                 if (!started)
                 {
                     Logger.Write($"Executable launch failed for {application.Name}.");

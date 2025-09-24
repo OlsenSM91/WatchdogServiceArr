@@ -25,29 +25,43 @@ namespace ServiceWatchdogArr
         public static bool TryAcquire(Action showCallback, out SingleInstanceManager manager)
         {
             manager = null;
-            if (showCallback == null)
-            {
-                throw new ArgumentNullException(nameof(showCallback));
-            }
+            ArgumentNullException.ThrowIfNull(showCallback);
 
             bool createdNew;
-            Mutex mutex = new Mutex(initiallyOwned: true, name: MutexName, createdNew: out createdNew);
-            if (!createdNew)
+            Mutex mutex = new Mutex(initiallyOwned: false, name: MutexName, createdNew: out createdNew);
+
+            try
+            {
+                bool acquired = mutex.WaitOne(TimeSpan.FromMilliseconds(100), false);
+                if (!acquired)
+                {
+                    mutex.Dispose();
+                    return false;
+                }
+
+                if (!createdNew)
+                {
+                    mutex.ReleaseMutex();
+                    mutex.Dispose();
+                    return false;
+                }
+
+                EventWaitHandle showHandle = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
+                RegisteredWaitHandle registeredWait = ThreadPool.RegisterWaitForSingleObject(
+                    showHandle,
+                    (_, _) => showCallback(),
+                    null,
+                    Timeout.Infinite,
+                    executeOnlyOnce: false);
+
+                manager = new SingleInstanceManager(mutex, showHandle, registeredWait, showCallback);
+                return true;
+            }
+            catch
             {
                 mutex.Dispose();
                 return false;
             }
-
-            EventWaitHandle showHandle = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
-            RegisteredWaitHandle registeredWait = ThreadPool.RegisterWaitForSingleObject(
-                showHandle,
-                (_, _) => showCallback(),
-                null,
-                Timeout.Infinite,
-                executeOnlyOnce: false);
-
-            manager = new SingleInstanceManager(mutex, showHandle, registeredWait, showCallback);
-            return true;
         }
 
         public static void SignalExistingInstance()

@@ -10,7 +10,7 @@ namespace ServiceWatchdogArr
     {
         private const int KillWaitMilliseconds = 10000;
 
-        public ProcessQueryResult QueryProcesses(IEnumerable<string> processNames)
+        public static ProcessQueryResult QueryProcesses(IEnumerable<string> processNames)
         {
             List<string> targets = NormalizeTargets(processNames);
             if (targets.Count == 0)
@@ -52,7 +52,7 @@ namespace ServiceWatchdogArr
             return new ProcessQueryResult(running);
         }
 
-        public bool KillProcesses(IEnumerable<string> processNames, string applicationName)
+        public static bool KillProcesses(IEnumerable<string> processNames, string applicationName)
         {
             List<string> targets = NormalizeTargets(processNames);
             if (targets.Count == 0)
@@ -100,7 +100,7 @@ namespace ServiceWatchdogArr
             return terminatedAny;
         }
 
-        public bool StartProcess(string executablePath, string applicationName)
+        public static bool StartProcess(string executablePath, string applicationName)
         {
             if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
             {

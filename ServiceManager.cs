@@ -9,7 +9,7 @@ namespace ServiceWatchdogArr
         private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(30);
 
-        public ServiceQueryResult QueryStatus(string serviceName)
+        public static ServiceQueryResult QueryStatus(string serviceName)
         {
             if (string.IsNullOrWhiteSpace(serviceName))
             {
@@ -38,7 +38,7 @@ namespace ServiceWatchdogArr
             }
         }
 
-        public ServiceRestartResult RestartService(string serviceName)
+        public static ServiceRestartResult RestartService(string serviceName)
         {
             if (string.IsNullOrWhiteSpace(serviceName))
             {

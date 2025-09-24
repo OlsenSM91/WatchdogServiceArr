@@ -38,10 +38,7 @@ namespace ServiceWatchdogArr
 
         public void ApplyConfiguration(WatchdogConfig config)
         {
-            if (config == null)
-            {
-                throw new ArgumentNullException(nameof(config));
-            }
+            ArgumentNullException.ThrowIfNull(config);
 
             lock (_syncRoot)
             {
@@ -83,8 +80,8 @@ namespace ServiceWatchdogArr
                 var statuses = new List<ApplicationStatusSnapshot>();
                 foreach (MonitoredApplication application in configSnapshot.Applications)
                 {
-                    ServiceQueryResult serviceStatus = _serviceManager.QueryStatus(application.ServiceName);
-                    ProcessQueryResult processStatus = _processManager.QueryProcesses(application.ProcessNames);
+                    ServiceQueryResult serviceStatus = ServiceManager.QueryStatus(application.ServiceName);
+                    ProcessQueryResult processStatus = ProcessManager.QueryProcesses(application.ProcessNames);
                     var snapshot = new ApplicationStatusSnapshot(application, configSnapshot.GlobalMonitoringEnabled, serviceStatus, processStatus);
                     statuses.Add(snapshot);
                     LogStatus(snapshot);

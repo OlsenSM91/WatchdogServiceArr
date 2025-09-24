@@ -5,7 +5,7 @@ using System.Windows.Forms;
 
 namespace ServiceWatchdogArr
 {
-    internal partial class SettingsForm : Form
+    internal sealed partial class SettingsForm : Form
     {
         private readonly WatchdogConfig _config;
 

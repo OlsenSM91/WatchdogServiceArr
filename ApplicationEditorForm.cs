@@ -321,7 +321,7 @@ namespace ServiceWatchdogArr
                     try
                     {
                         var item = new ListViewItem(process.ProcessName);
-                        item.SubItems.Add(process.Id.ToString());
+                        item.SubItems.Add(process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
                         _lvProcesses.Items.Add(item);
                     }
                     finally
