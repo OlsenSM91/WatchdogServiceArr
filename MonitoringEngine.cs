@@ -12,7 +12,7 @@ namespace ServiceWatchdogArr
         private readonly ProcessManager _processManager = new ProcessManager();
         private readonly object _syncRoot = new object();
         private readonly SemaphoreSlim _cycleLock = new SemaphoreSlim(1, 1);
-        private Timer _timer;
+        private System.Threading.Timer _timer;
         private WatchdogConfig _config;
         private List<ApplicationStatusSnapshot> _latest = new List<ApplicationStatusSnapshot>();
         private bool _disposed;
@@ -20,7 +20,7 @@ namespace ServiceWatchdogArr
         public MonitoringEngine(WatchdogConfig config)
         {
             _config = config.Clone();
-            _timer = new Timer(OnTimerTick, null, TimeSpan.Zero, _config.MonitoringInterval);
+            _timer = new System.Threading.Timer(OnTimerTick, null, TimeSpan.Zero, _config.MonitoringInterval);
         }
 
         public event EventHandler<MonitoringCycleEventArgs> MonitoringCycleCompleted;

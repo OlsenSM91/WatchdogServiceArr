@@ -5,11 +5,11 @@ using System.Windows.Forms;
 
 namespace ServiceWatchdogArr
 {
-    public partial class SettingsForm : Form
+    internal partial class SettingsForm : Form
     {
         private readonly WatchdogConfig _config;
 
-        public event Action<WatchdogConfig> SettingsSaved;
+        internal event Action<WatchdogConfig> SettingsSaved;
 
         public SettingsForm(WatchdogConfig config)
         {
