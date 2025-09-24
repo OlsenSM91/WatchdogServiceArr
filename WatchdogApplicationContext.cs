@@ -21,6 +21,7 @@ namespace ServiceWatchdogArr
         private readonly Dictionary<string, AppStatusSnapshot> lastStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Icon baseIcon;
         private readonly Dictionary<TrayStatus, Icon> trayStatusIcons = new();
+        private readonly Dictionary<ServiceIndicator, Image> indicatorImages = new();
         private TrayStatus currentTrayStatus = TrayStatus.Unknown;
 
         public WatchdogApplicationContext()
@@ -49,17 +50,17 @@ namespace ServiceWatchdogArr
 
         private static Icon LoadBaseIcon()
         {
+            string icoPath = Path.Combine(AppContext.BaseDirectory, "Resources", "icon.ico");
+            if (File.Exists(icoPath))
+            {
+                return new Icon(icoPath);
+            }
+
             string pngPath = Path.Combine(AppContext.BaseDirectory, "Resources", "icon.png");
             if (File.Exists(pngPath))
             {
                 using var bmp = new Bitmap(pngPath);
                 return CreateIconFromBitmap(bmp);
-            }
-
-            string icoPath = Path.Combine(AppContext.BaseDirectory, "Resources", "icon.ico");
-            if (File.Exists(icoPath))
-            {
-                return new Icon(icoPath);
             }
 
             using var fallback = new Bitmap(32, 32);
@@ -104,14 +105,21 @@ namespace ServiceWatchdogArr
         {
             trayIcon.ContextMenuStrip?.Dispose();
 
-            ContextMenuStrip menu = new ContextMenuStrip();
+            ContextMenuStrip menu = new ContextMenuStrip
+            {
+                ShowImageMargin = true,
+                ImageScalingSize = new Size(16, 16)
+            };
 
             if (applications.Count > 0)
             {
-                ToolStripMenuItem servicesMenu = new ToolStripMenuItem("Services") { Tag = "servicesMenu" };
                 foreach (var app in applications)
                 {
-                    ToolStripMenuItem svcMenu = new ToolStripMenuItem(app.Name) { Tag = app };
+                    ToolStripMenuItem svcMenu = new ToolStripMenuItem(app.Name)
+                    {
+                        Tag = app,
+                        ImageScaling = ToolStripItemImageScaling.None
+                    };
 
                     var restartItem = new ToolStripMenuItem("Restart");
                     restartItem.Click += (s, e) => RestartApplication(app);
@@ -121,9 +129,8 @@ namespace ServiceWatchdogArr
                     toggleItem.Click += (s, e) => ToggleMonitoring(app);
                     svcMenu.DropDownItems.Add(toggleItem);
 
-                    servicesMenu.DropDownItems.Add(svcMenu);
+                    menu.Items.Add(svcMenu);
                 }
-                menu.Items.Add(servicesMenu);
                 menu.Items.Add(new ToolStripSeparator());
             }
 
@@ -191,26 +198,22 @@ namespace ServiceWatchdogArr
 
         private void UpdateMenuItem(ContextMenuStrip menu, WatchedApplication app, bool enabled, ApplicationStatus status)
         {
-            foreach (ToolStripMenuItem item in menu.Items.OfType<ToolStripMenuItem>())
+            foreach (ToolStripMenuItem svcItem in menu.Items.OfType<ToolStripMenuItem>())
             {
-                if (!string.Equals(item.Tag as string, "servicesMenu", StringComparison.Ordinal))
+                if (!ReferenceEquals(svcItem.Tag, app))
                     continue;
 
-                foreach (ToolStripMenuItem svcItem in item.DropDownItems.OfType<ToolStripMenuItem>())
-                {
-                    if (!ReferenceEquals(svcItem.Tag, app))
-                        continue;
+                svcItem.Text = app.Name;
+                svcItem.Image = GetIndicatorImage(enabled ? (status.IsRunning ? ServiceIndicator.Running : ServiceIndicator.Stopped)
+                                                           : ServiceIndicator.Disabled);
 
-                    string indicator = enabled ? (status.IsRunning ? "🟢" : "🔴") : "⚪";
-                    svcItem.Text = $"{indicator} {app.Name}";
+                var toggleItem = svcItem.DropDownItems.OfType<ToolStripMenuItem>()
+                    .FirstOrDefault(i => string.Equals(i.Tag as string, "toggle", StringComparison.Ordinal));
+                if (toggleItem != null)
+                    toggleItem.Text = enabled ? "Disable Monitoring" : "Enable Monitoring";
 
-                    var toggleItem = svcItem.DropDownItems.OfType<ToolStripMenuItem>()
-                        .FirstOrDefault(i => string.Equals(i.Tag as string, "toggle", StringComparison.Ordinal));
-                    if (toggleItem != null)
-                        toggleItem.Text = enabled ? "Disable Monitoring" : "Enable Monitoring";
-
-                    return;
-                }
+                svcItem.ForeColor = enabled ? SystemColors.ControlText : SystemColors.GrayText;
+                return;
             }
         }
 
@@ -224,8 +227,7 @@ namespace ServiceWatchdogArr
             {
                 if (enabled)
                 {
-                    Logger.Write($"{app.Name} service status: {(status.ServiceRunning ? "Running" : "Stopped")}");
-                    Logger.Write($"{app.Name} process status: {(status.ProcessRunning ? "Running" : "Stopped")}");
+                    Logger.Write($"{app.Name} status: {(status.IsRunning ? "Running" : "Stopped")} ({BuildStatusSummary(app, status)})");
 
                     if (!string.IsNullOrWhiteSpace(app.ServiceName))
                     {
@@ -308,25 +310,33 @@ namespace ServiceWatchdogArr
             return icon;
         }
 
-        private static Icon CreateStatusIcon(Color fill, Color border)
+        private Icon CreateStatusIcon(Color fill, Color border)
         {
-            using var bmp = new Bitmap(32, 32);
-            using var g = Graphics.FromImage(bmp);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-
-            var rect = new Rectangle(4, 4, 24, 24);
-            using (var brush = new SolidBrush(fill))
+            using var iconBitmap = baseIcon.ToBitmap();
+            using var baseBitmap = new Bitmap(iconBitmap, new Size(32, 32));
+            using var canvas = new Bitmap(baseBitmap.Width, baseBitmap.Height);
+            using (var g = Graphics.FromImage(canvas))
             {
-                g.FillEllipse(brush, rect);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+                g.DrawImage(baseBitmap, Point.Empty);
+
+                int diameter = Math.Max(6, canvas.Width / 3);
+                int padding = Math.Max(2, canvas.Width / 10);
+                var rect = new Rectangle(canvas.Width - diameter - padding, canvas.Height - diameter - padding, diameter, diameter);
+
+                using (var brush = new SolidBrush(fill))
+                {
+                    g.FillEllipse(brush, rect);
+                }
+
+                using (var pen = new Pen(border, Math.Max(2f, diameter / 5f)))
+                {
+                    g.DrawEllipse(pen, rect);
+                }
             }
 
-            using (var pen = new Pen(border, 3))
-            {
-                g.DrawEllipse(pen, rect);
-            }
-
-            return CreateIconFromBitmap(bmp);
+            return CreateIconFromBitmap(canvas);
         }
 
         private static Icon CreateIconFromBitmap(Bitmap bitmap)
@@ -349,6 +359,70 @@ namespace ServiceWatchdogArr
             monitoringEnabled[app.Name] = !current;
             Logger.Write($"{(monitoringEnabled[app.Name] ? "Enabled" : "Disabled")} monitoring for {app.Name}");
             UpdateStatus();
+        }
+
+        private Image GetIndicatorImage(ServiceIndicator indicator)
+        {
+            if (!indicatorImages.TryGetValue(indicator, out var image))
+            {
+                var colors = indicator switch
+                {
+                    ServiceIndicator.Running => (fill: Color.LimeGreen, border: Color.SeaGreen),
+                    ServiceIndicator.Stopped => (fill: Color.OrangeRed, border: Color.Maroon),
+                    _ => (fill: Color.LightGray, border: Color.DimGray)
+                };
+
+                image = CreateIndicatorImage(colors.fill, colors.border);
+                indicatorImages[indicator] = image;
+            }
+
+            return image;
+        }
+
+        private static Image CreateIndicatorImage(Color fill, Color border)
+        {
+            Bitmap bmp = new Bitmap(16, 16);
+            using var g = Graphics.FromImage(bmp);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+
+            var rect = new Rectangle(3, 3, 10, 10);
+            using (var brush = new SolidBrush(fill))
+            {
+                g.FillEllipse(brush, rect);
+            }
+
+            using (var pen = new Pen(border, 2f))
+            {
+                g.DrawEllipse(pen, rect);
+            }
+
+            return bmp;
+        }
+
+        private static string BuildStatusSummary(WatchedApplication app, ApplicationStatus status)
+        {
+            bool hasService = !string.IsNullOrWhiteSpace(app.ServiceName);
+            bool hasProcess = !string.IsNullOrWhiteSpace(app.ProcessName);
+
+            if (hasService && hasProcess)
+            {
+                if (status.ServiceRunning && status.ProcessRunning)
+                    return "service and process running";
+                if (status.ServiceRunning && !status.ProcessRunning)
+                    return "service running, process stopped";
+                if (!status.ServiceRunning && status.ProcessRunning)
+                    return "process running, service stopped";
+                return "service and process stopped";
+            }
+
+            if (hasService)
+                return status.ServiceRunning ? "service running" : "service stopped";
+
+            if (hasProcess)
+                return status.ProcessRunning ? "process running" : "process stopped";
+
+            return status.IsRunning ? "running" : "stopped";
         }
 
         private void RestartApplication(WatchedApplication app)
@@ -601,6 +675,12 @@ namespace ServiceWatchdogArr
             trayStatusIcons.Clear();
             baseIcon.Dispose();
 
+            foreach (var image in indicatorImages.Values)
+            {
+                image.Dispose();
+            }
+            indicatorImages.Clear();
+
             base.ExitThreadCore();
         }
 
@@ -633,6 +713,13 @@ namespace ServiceWatchdogArr
             MonitoringDisabled,
             AllRunning,
             IssueDetected
+        }
+
+        private enum ServiceIndicator
+        {
+            Running,
+            Stopped,
+            Disabled
         }
 
         private static class NativeMethods
