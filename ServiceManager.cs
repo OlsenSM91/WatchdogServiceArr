@@ -68,7 +68,7 @@ namespace ServiceWatchdogArr
             }
             catch (InvalidOperationException ex) when (IsAccessDenied(ex))
             {
-                return ServiceRestartResult.RequiresElevation(ex.Message);
+                return ServiceRestartResult.ElevationRequired(ex.Message);
             }
             catch (Exception ex)
             {
@@ -117,7 +117,7 @@ namespace ServiceWatchdogArr
             Succeeded = succeeded;
             RequiresElevation = requiresElevation;
             Message = message;
-            Skipped = skipped;
+            IsSkipped = skipped;
         }
 
         public bool Succeeded { get; }
@@ -126,11 +126,11 @@ namespace ServiceWatchdogArr
 
         public string Message { get; }
 
-        public bool Skipped { get; }
+        public bool IsSkipped { get; }
 
         public static ServiceRestartResult Success => new ServiceRestartResult(true, false, string.Empty, false);
 
-        public static ServiceRestartResult RequiresElevation(string message) => new ServiceRestartResult(false, true, message, false);
+        public static ServiceRestartResult ElevationRequired(string message) => new ServiceRestartResult(false, true, message, false);
 
         public static ServiceRestartResult Failure(string message) => new ServiceRestartResult(false, false, message, false);
 

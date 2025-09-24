@@ -504,7 +504,7 @@ namespace ServiceWatchdogArr
                     Logger.Write($"Service restart failed for {application.Name}: administrator rights required.");
                     _serviceRequiresElevation[application.ServiceName] = true;
                 }
-                else if (!serviceResult.Skipped)
+                else if (!serviceResult.IsSkipped)
                 {
                     Logger.Write($"Service restart failed for {application.Name}: {serviceResult.Message}");
                 }
