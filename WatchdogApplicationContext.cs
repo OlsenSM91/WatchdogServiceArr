@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Windows.Forms;
 
@@ -12,40 +14,66 @@ namespace ServiceWatchdogArr
     public class WatchdogApplicationContext : ApplicationContext
     {
         private readonly NotifyIcon trayIcon;
-        private readonly System.Timers.Timer checkTimer;
+        private readonly System.Windows.Forms.Timer checkTimer;
         private WatchdogConfig config;
         private List<WatchedApplication> applications = new();
         private readonly Dictionary<string, bool> monitoringEnabled = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, AppStatusSnapshot> lastStatuses = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Icon baseIcon;
+        private readonly Dictionary<TrayStatus, Icon> trayStatusIcons = new();
+        private TrayStatus currentTrayStatus = TrayStatus.Unknown;
 
         public WatchdogApplicationContext()
         {
             LoadConfiguration();
 
-            // Use PNG for tray (your request); fall back to ICO if PNG missing.
-            Icon trayIco;
-            try
-            {
-                using var bmp = new Bitmap(Path.Combine(AppContext.BaseDirectory, "Resources", "icon.png"));
-                trayIco = Icon.FromHandle(bmp.GetHicon());
-            }
-            catch
-            {
-                trayIco = new Icon(Path.Combine(AppContext.BaseDirectory, "Resources", "icon.ico"));
-            }
+            baseIcon = LoadBaseIcon();
 
-            trayIcon = new NotifyIcon()
+            trayIcon = new NotifyIcon
             {
-                Icon = trayIco,
+                Icon = baseIcon,
                 Visible = true,
-                Text = "ServiceWatchdogArr"
+                Text = "ServiceWatchdogArr: Initializing"
             };
 
-            checkTimer = new System.Timers.Timer(config.IntervalMinutes * 60000);
-            checkTimer.Elapsed += (s, e) => UpdateStatus();
+            checkTimer = new System.Windows.Forms.Timer
+            {
+                Interval = GetIntervalMilliseconds(config.IntervalMinutes)
+            };
+            checkTimer.Tick += (_, _) => UpdateStatus();
             checkTimer.Start();
 
             BuildContextMenu();
             UpdateStatus();
+        }
+
+        private static Icon LoadBaseIcon()
+        {
+            string pngPath = Path.Combine(AppContext.BaseDirectory, "Resources", "icon.png");
+            if (File.Exists(pngPath))
+            {
+                using var bmp = new Bitmap(pngPath);
+                return CreateIconFromBitmap(bmp);
+            }
+
+            string icoPath = Path.Combine(AppContext.BaseDirectory, "Resources", "icon.ico");
+            if (File.Exists(icoPath))
+            {
+                return new Icon(icoPath);
+            }
+
+            using var fallback = new Bitmap(32, 32);
+            using var g = Graphics.FromImage(fallback);
+            g.Clear(Color.Gray);
+            using var pen = new Pen(Color.Black, 2);
+            g.DrawEllipse(pen, new Rectangle(4, 4, 24, 24));
+            return CreateIconFromBitmap(fallback);
+        }
+
+        private static int GetIntervalMilliseconds(int minutes)
+        {
+            long ms = Math.Max(1, minutes) * 60000L;
+            return (int)Math.Min(int.MaxValue, ms);
         }
 
         private void LoadConfiguration()
@@ -58,6 +86,11 @@ namespace ServiceWatchdogArr
             foreach (var key in monitoringEnabled.Keys.Where(k => !names.Contains(k)).ToList())
             {
                 monitoringEnabled.Remove(key);
+            }
+
+            foreach (var key in lastStatuses.Keys.Where(k => !names.Contains(k)).ToList())
+            {
+                lastStatuses.Remove(key);
             }
 
             foreach (var app in applications)
@@ -103,7 +136,7 @@ namespace ServiceWatchdogArr
                 if (settings.ShowDialog() == DialogResult.OK)
                 {
                     LoadConfiguration();
-                    checkTimer.Interval = config.IntervalMinutes * 60000;
+                    checkTimer.Interval = GetIntervalMilliseconds(config.IntervalMinutes);
                     Logger.Write($"Interval updated to {config.Interval.Value} {config.Interval.Unit}");
                     BuildContextMenu();
                     UpdateStatus();
@@ -119,44 +152,194 @@ namespace ServiceWatchdogArr
 
         private void UpdateStatus()
         {
-            if (trayIcon.ContextMenuStrip == null)
-                return;
+            ContextMenuStrip? menu = trayIcon.ContextMenuStrip;
 
-            if (trayIcon.ContextMenuStrip.InvokeRequired)
+            if (menu != null && menu.InvokeRequired)
             {
-                trayIcon.ContextMenuStrip.BeginInvoke(new MethodInvoker(UpdateStatus));
+                menu.BeginInvoke(new MethodInvoker(UpdateStatus));
                 return;
             }
 
-            foreach (ToolStripMenuItem item in trayIcon.ContextMenuStrip.Items.OfType<ToolStripMenuItem>())
+            bool anyMonitoring = false;
+            bool anyRunning = false;
+            bool allRunning = true;
+
+            foreach (var app in applications)
+            {
+                bool enabled = monitoringEnabled.GetValueOrDefault(app.Name, true);
+                var status = GetApplicationStatus(app);
+
+                UpdateStatusLog(app, enabled, status);
+
+                if (menu != null)
+                {
+                    UpdateMenuItem(menu, app, enabled, status);
+                }
+
+                if (enabled)
+                {
+                    anyMonitoring = true;
+                    if (status.IsRunning)
+                        anyRunning = true;
+                    else
+                        allRunning = false;
+                }
+            }
+
+            UpdateTraySummary(anyMonitoring, allRunning, anyRunning);
+        }
+
+        private void UpdateMenuItem(ContextMenuStrip menu, WatchedApplication app, bool enabled, ApplicationStatus status)
+        {
+            foreach (ToolStripMenuItem item in menu.Items.OfType<ToolStripMenuItem>())
             {
                 if (!string.Equals(item.Tag as string, "servicesMenu", StringComparison.Ordinal))
                     continue;
 
                 foreach (ToolStripMenuItem svcItem in item.DropDownItems.OfType<ToolStripMenuItem>())
                 {
-                    if (svcItem.Tag is not WatchedApplication app)
+                    if (!ReferenceEquals(svcItem.Tag, app))
                         continue;
 
-                    bool enabled = monitoringEnabled.GetValueOrDefault(app.Name, true);
-                    string indicator;
-                    if (!enabled)
-                    {
-                        indicator = "⚪";
-                    }
-                    else
-                    {
-                        bool running = IsApplicationRunning(app);
-                        indicator = running ? "🟢" : "🔴";
-                    }
-
+                    string indicator = enabled ? (status.IsRunning ? "🟢" : "🔴") : "⚪";
                     svcItem.Text = $"{indicator} {app.Name}";
 
                     var toggleItem = svcItem.DropDownItems.OfType<ToolStripMenuItem>()
                         .FirstOrDefault(i => string.Equals(i.Tag as string, "toggle", StringComparison.Ordinal));
                     if (toggleItem != null)
                         toggleItem.Text = enabled ? "Disable Monitoring" : "Enable Monitoring";
+
+                    return;
                 }
+            }
+        }
+
+        private void UpdateStatusLog(WatchedApplication app, bool enabled, ApplicationStatus status)
+        {
+            if (!lastStatuses.TryGetValue(app.Name, out var previous) ||
+                previous.MonitoringEnabled != enabled ||
+                previous.ServiceRunning != status.ServiceRunning ||
+                previous.ProcessRunning != status.ProcessRunning ||
+                !string.Equals(previous.ServiceError, status.ServiceError, StringComparison.Ordinal))
+            {
+                if (enabled)
+                {
+                    Logger.Write($"{app.Name} service status: {(status.ServiceRunning ? "Running" : "Stopped")}");
+                    Logger.Write($"{app.Name} process status: {(status.ProcessRunning ? "Running" : "Stopped")}");
+
+                    if (!string.IsNullOrWhiteSpace(app.ServiceName))
+                    {
+                        if (status.ServiceError != null)
+                        {
+                            Logger.Write($"{app.Name} service query error ({app.ServiceName}): {status.ServiceError}");
+                        }
+                        else if (!string.IsNullOrEmpty(previous?.ServiceError))
+                        {
+                            Logger.Write($"{app.Name} service query restored ({app.ServiceName})");
+                        }
+                    }
+                }
+
+                lastStatuses[app.Name] = new AppStatusSnapshot
+                {
+                    MonitoringEnabled = enabled,
+                    ServiceRunning = status.ServiceRunning,
+                    ProcessRunning = status.ProcessRunning,
+                    ServiceError = status.ServiceError
+                };
+            }
+        }
+
+        private void UpdateTraySummary(bool anyMonitoring, bool allRunning, bool anyRunning)
+        {
+            TrayStatus status;
+            string tooltip;
+
+            if (!anyMonitoring)
+            {
+                status = TrayStatus.MonitoringDisabled;
+                tooltip = "ServiceWatchdogArr: Monitoring paused";
+            }
+            else if (allRunning && anyRunning)
+            {
+                status = TrayStatus.AllRunning;
+                tooltip = "ServiceWatchdogArr: All services OK";
+            }
+            else
+            {
+                status = TrayStatus.IssueDetected;
+                tooltip = "ServiceWatchdogArr: Attention required";
+            }
+
+            SetTrayStatus(status, tooltip);
+        }
+
+        private void SetTrayStatus(TrayStatus status, string tooltip)
+        {
+            if (status != currentTrayStatus)
+            {
+                trayIcon.Icon = GetStatusIcon(status);
+                currentTrayStatus = status;
+            }
+
+            if (!string.Equals(trayIcon.Text, tooltip, StringComparison.Ordinal))
+            {
+                trayIcon.Text = tooltip;
+            }
+        }
+
+        private Icon GetStatusIcon(TrayStatus status)
+        {
+            if (status == TrayStatus.Unknown)
+                return baseIcon;
+
+            if (!trayStatusIcons.TryGetValue(status, out var icon))
+            {
+                icon = status switch
+                {
+                    TrayStatus.AllRunning => CreateStatusIcon(Color.LimeGreen, Color.SeaGreen),
+                    TrayStatus.IssueDetected => CreateStatusIcon(Color.OrangeRed, Color.Maroon),
+                    TrayStatus.MonitoringDisabled => CreateStatusIcon(Color.LightGray, Color.DimGray),
+                    _ => baseIcon
+                };
+                trayStatusIcons[status] = icon;
+            }
+
+            return icon;
+        }
+
+        private static Icon CreateStatusIcon(Color fill, Color border)
+        {
+            using var bmp = new Bitmap(32, 32);
+            using var g = Graphics.FromImage(bmp);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+
+            var rect = new Rectangle(4, 4, 24, 24);
+            using (var brush = new SolidBrush(fill))
+            {
+                g.FillEllipse(brush, rect);
+            }
+
+            using (var pen = new Pen(border, 3))
+            {
+                g.DrawEllipse(pen, rect);
+            }
+
+            return CreateIconFromBitmap(bmp);
+        }
+
+        private static Icon CreateIconFromBitmap(Bitmap bitmap)
+        {
+            IntPtr hIcon = bitmap.GetHicon();
+            try
+            {
+                using Icon temp = Icon.FromHandle(hIcon);
+                return (Icon)temp.Clone();
+            }
+            finally
+            {
+                NativeMethods.DestroyIcon(hIcon);
             }
         }
 
@@ -173,41 +356,45 @@ namespace ServiceWatchdogArr
             try
             {
                 bool serviceRestarted = TryRestartService(app);
+                bool processesTerminated = serviceRestarted;
+
                 if (!serviceRestarted)
                 {
-                    TerminateProcesses(app.ProcessName, app.Name);
+                    processesTerminated = TerminateProcesses(app.ProcessName, app.Name);
                 }
 
-                var status = GetApplicationStatus(app);
-                bool success = false;
+                var afterStopStatus = GetApplicationStatus(app);
+
+                bool processStarted = false;
+                if (!afterStopStatus.ProcessRunning && !string.IsNullOrWhiteSpace(app.ExecutablePath))
+                {
+                    processStarted = TryStartExecutable(app);
+                }
+
+                var finalStatus = GetApplicationStatus(app);
 
                 if (serviceRestarted)
                 {
                     Logger.Write($"Restarted service for {app.Name}");
-                    success = true;
                 }
 
-                if (!status.ProcessRunning && !string.IsNullOrWhiteSpace(app.ExecutablePath))
+                if (processStarted)
                 {
-                    if (TryStartExecutable(app))
+                    if (finalStatus.ProcessRunning)
                     {
-                        status = GetApplicationStatus(app);
                         Logger.Write($"Restarted process for {app.Name}");
-                        success = true;
+                    }
+                    else
+                    {
+                        Logger.Write($"Process restart requested for {app.Name}, but it is not running yet");
                     }
                 }
-                else if (status.ProcessRunning)
+                else if (!serviceRestarted && !processesTerminated && finalStatus.IsRunning)
                 {
-                    Logger.Write($"Restarted process for {app.Name}");
-                    success = true;
+                    Logger.Write($"{app.Name} is already running");
                 }
 
-                if (!success && (status.ServiceRunning || status.ProcessRunning))
-                {
-                    success = true;
-                }
-
-                if (!success)
+                if (!finalStatus.IsRunning)
                 {
                     throw new InvalidOperationException($"Unable to restart {app.Name}");
                 }
@@ -255,14 +442,17 @@ namespace ServiceWatchdogArr
             }
         }
 
-        private static void TerminateProcesses(string? processName, string appName)
+        private static bool TerminateProcesses(string? processName, string appName)
         {
+            bool terminatedAny = false;
+
             foreach (var proc in FindProcesses(processName))
             {
                 try
                 {
                     Logger.Write($"Stopping process {proc.ProcessName} for {appName}");
                     proc.Kill(true);
+                    terminatedAny = true;
                     proc.WaitForExit(10000);
                 }
                 catch (Exception ex)
@@ -274,6 +464,8 @@ namespace ServiceWatchdogArr
                     proc.Dispose();
                 }
             }
+
+            return terminatedAny;
         }
 
         private static bool TryStartExecutable(WatchedApplication app)
@@ -298,15 +490,11 @@ namespace ServiceWatchdogArr
             }
         }
 
-        private bool IsApplicationRunning(WatchedApplication app)
-        {
-            var status = GetApplicationStatus(app);
-            return status.ServiceRunning || status.ProcessRunning;
-        }
-
-        private (bool ServiceRunning, bool ProcessRunning) GetApplicationStatus(WatchedApplication app)
+        private ApplicationStatus GetApplicationStatus(WatchedApplication app)
         {
             bool serviceRunning = false;
+            string? serviceError = null;
+
             if (!string.IsNullOrWhiteSpace(app.ServiceName))
             {
                 try
@@ -316,14 +504,15 @@ namespace ServiceWatchdogArr
                     serviceRunning = sc.Status == ServiceControllerStatus.Running ||
                                      sc.Status == ServiceControllerStatus.StartPending;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    serviceError = ex.Message;
                     serviceRunning = false;
                 }
             }
 
             bool processRunning = IsProcessRunning(app.ProcessName);
-            return (serviceRunning, processRunning);
+            return new ApplicationStatus(serviceRunning, processRunning, serviceError);
         }
 
         private static bool IsProcessRunning(string? processName)
@@ -399,10 +588,57 @@ namespace ServiceWatchdogArr
 
         protected override void ExitThreadCore()
         {
+            checkTimer.Stop();
+            checkTimer.Dispose();
+
             trayIcon.Visible = false;
             trayIcon.Dispose();
+
+            foreach (var icon in trayStatusIcons.Values)
+            {
+                icon.Dispose();
+            }
+            trayStatusIcons.Clear();
+            baseIcon.Dispose();
+
             base.ExitThreadCore();
+        }
+
+        private sealed class AppStatusSnapshot
+        {
+            public bool MonitoringEnabled { get; init; }
+            public bool ServiceRunning { get; init; }
+            public bool ProcessRunning { get; init; }
+            public string? ServiceError { get; init; }
+        }
+
+        private readonly struct ApplicationStatus
+        {
+            public ApplicationStatus(bool serviceRunning, bool processRunning, string? serviceError)
+            {
+                ServiceRunning = serviceRunning;
+                ProcessRunning = processRunning;
+                ServiceError = serviceError;
+            }
+
+            public bool ServiceRunning { get; }
+            public bool ProcessRunning { get; }
+            public string? ServiceError { get; }
+            public bool IsRunning => ServiceRunning || ProcessRunning;
+        }
+
+        private enum TrayStatus
+        {
+            Unknown,
+            MonitoringDisabled,
+            AllRunning,
+            IssueDetected
+        }
+
+        private static class NativeMethods
+        {
+            [DllImport("user32.dll")]
+            public static extern bool DestroyIcon(IntPtr hIcon);
         }
     }
 }
-
