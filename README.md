@@ -8,7 +8,7 @@ Windows tray watchdog for Plex, Radarr, Sonarr, Docker Desktop, iCUE.
 - Config is stored in `appsettings.json` with root object containing `WatchdogConfig`.
 
 ## Build
-- Requires .NET 8 SDK on Windows.
+- Requires .NET 9 SDK on Windows.
 - Open `ServiceWatchdogArr.csproj` in Visual Studio, or run:
   ```
   dotnet build -c Release
