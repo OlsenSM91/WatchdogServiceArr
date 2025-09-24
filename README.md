@@ -1,5 +1,7 @@
 # ServiceWatchdogArr
 
+<img width="409" height="179" alt="Screenshot 2025-09-24 011709" src="https://github.com/user-attachments/assets/d3008dd1-1703-49a4-8bb8-e85d8a9517ae" />
+
 ServiceWatchdogArr is a Windows 10/11 tray application that keeps user-selected services and/or processes running. It monitors the configured applications on a schedule, restarts them when required, and exposes configuration and diagnostic tooling directly from the tray icon.
 
 ## Key features
